@@ -6,7 +6,7 @@
     "dist": "npx tsc",
     "dev": "nodemon src/index.ts",
     "start": "node dist/index.js",
-    "build": "tsc -p . && cp -r src/generated/prisma dist/generated/prisma",
+    "build": "tsc -p . && mkdir -p dist/generated && cp -r src/generated/prisma dist/generated/prisma",
     "postinstall": "prisma generate"
   },
   "keywords": [],
