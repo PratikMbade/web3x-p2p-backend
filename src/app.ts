@@ -16,8 +16,18 @@ const app = express();
 
 // ─── Security middleware ──────────────────────────────────────────────────────
 app.use(helmet());
+const allowedOrigins = new Set([
+  "https://p2p.web3x.space",
+  ...(process.env["FRONTEND_URL"] ? [process.env["FRONTEND_URL"]] : []),
+]);
+
 app.use(cors({
-  origin:  config.isProd ? process.env["FRONTEND_URL"] ?? false : "*",
+  origin: config.isProd
+    ? (origin, cb) => {
+        if (!origin || allowedOrigins.has(origin)) cb(null, true);
+        else cb(new Error("Not allowed by CORS"));
+      }
+    : "*",
   methods: ["GET", "POST", "DELETE"],
 }));
 app.use(express.json({ limit: "1mb" }));
