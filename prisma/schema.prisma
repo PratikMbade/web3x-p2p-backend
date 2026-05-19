@@ -1,0 +1,215 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// Raw fill events — source of truth for candle building. Never delete.
+// ─────────────────────────────────────────────────────────────────────────────
+model FillEvent {
+  id             String   @id @default(cuid())
+  txHash         String   @unique
+  blockNumber    Int
+  logIndex       Int
+  blockTimestamp DateTime
+  tokenOne       String
+  tokenTwo       String
+  orderId        String
+  filler         String
+  fillAmount     String
+  pricePerToken  String
+  createdAt      DateTime @default(now())
+
+  @@index([tokenOne, tokenTwo])
+  @@index([blockNumber])
+  @@index([blockTimestamp])
+  @@index([orderId])
+  @@index([tokenOne, tokenTwo, blockTimestamp])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Order created events — full lifecycle tracking
+// status: "open" | "filled" | "cancelled"
+// ─────────────────────────────────────────────────────────────────────────────
+model OrderCreatedEvent {
+  id             String    @id @default(cuid())
+  txHash         String    @unique
+  blockNumber    Int
+  logIndex       Int
+  blockTimestamp DateTime
+  creator        String
+  tokenOne       String
+  tokenTwo       String
+  orderId        String
+  orderType      String    // "buy" | "sell"
+  amount         String    // wei — original total
+  pricePerToken  String    // wei
+  remainingAmt   String    // wei — decremented on each fill
+  status         String    @default("open")
+  filledAt       DateTime?
+  cancelledAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([tokenOne, tokenTwo])
+  @@index([tokenOne, tokenTwo, status])
+  @@index([creator])
+  @@index([orderId])
+  @@index([blockTimestamp])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Order cancelled events — raw on-chain record
+// ─────────────────────────────────────────────────────────────────────────────
+model OrderCancelledEvent {
+  id             String   @id @default(cuid())
+  txHash         String   @unique
+  blockNumber    Int
+  logIndex       Int
+  blockTimestamp DateTime
+  canceller      String
+  tokenOne       String
+  tokenTwo       String
+  orderId        String
+  createdAt      DateTime @default(now())
+
+  @@index([tokenOne, tokenTwo])
+  @@index([canceller])
+  @@index([orderId])
+  @@index([blockTimestamp])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OHLCV candles — rebuilt from FillEvent, all 6 intervals
+// ─────────────────────────────────────────────────────────────────────────────
+model Candle {
+  id         String   @id @default(cuid())
+  tokenOne   String
+  tokenTwo   String
+  interval   String   // "1m" | "5m" | "15m" | "1h" | "4h" | "1d"
+  openTime   DateTime
+  closeTime  DateTime
+  open       String
+  high       String
+  low        String
+  close      String
+  volume     String
+  tradeCount Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([tokenOne, tokenTwo, interval, openTime])
+  @@index([tokenOne, tokenTwo, interval, openTime])
+  @@index([tokenOne, tokenTwo, interval])
+  @@index([openTime])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Indexer checkpoint — single row, tracks last fully indexed block
+// ─────────────────────────────────────────────────────────────────────────────
+model IndexerState {
+  id            String   @id @default("singleton")
+  lastSafeBlock Int      @default(0)
+  lastUpdatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P2P Activity — every on-chain action by every wallet
+// activityType: "create_order" | "fill_order" | "cancel_order"
+// walletAddress links back to main backend User via wallet_address
+// ─────────────────────────────────────────────────────────────────────────────
+model P2PActivity {
+  id             String   @id @default(cuid())
+  walletAddress  String   // lowercase — joins to main backend User.wallet_address
+  activityType   String   // "create_order" | "fill_order" | "cancel_order"
+  orderId        String
+  tokenOne       String
+  tokenTwo       String
+  amount         String   // wei
+  pricePerToken  String   // wei
+  totalCost      String?  // wei — fill_order only: (amount * price) / 1e18
+  orderType      String?  // "buy" | "sell"
+  txHash         String   @unique
+  blockNumber    Int
+  blockTimestamp DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([walletAddress])
+  @@index([walletAddress, activityType])
+  @@index([tokenOne, tokenTwo])
+  @@index([tokenOne, tokenTwo, activityType])
+  @@index([blockTimestamp])
+  @@index([orderId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recent trades — one row per fillorder() call, UI-ready
+// Both filler + creator stored by wallet address
+// ─────────────────────────────────────────────────────────────────────────────
+model RecentTrade {
+  id             String   @id @default(cuid())
+  tokenOne       String
+  tokenTwo       String
+  fillerAddress  String   // msg.sender of fillorder()
+  creatorAddress String   // original order creator
+  orderId        String
+  orderType      String   // "buy" | "sell"
+  fillAmount     String   // wei
+  pricePerToken  String   // wei
+  totalValue     String   // wei — (fillAmount * pricePerToken) / 1e18
+  fullyFilled    Boolean  @default(false)
+  remainingAmt   String   // wei — remaining after this fill
+  txHash         String   @unique
+  blockNumber    Int
+  blockTimestamp DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([tokenOne, tokenTwo])
+  @@index([tokenOne, tokenTwo, blockTimestamp])
+  @@index([fillerAddress])
+  @@index([creatorAddress])
+  @@index([orderId])
+  @@index([blockTimestamp])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Closed orders — snapshot when order reaches terminal state
+// closedStatus: "filled" | "cancelled"
+// Keeps open order queries fast (no scanning OrderCreatedEvent for closed ones)
+// ─────────────────────────────────────────────────────────────────────────────
+model ClosedOrder {
+  id              String   @id @default(cuid())
+  orderId         String
+  tokenOne        String
+  tokenTwo        String
+  creatorAddress  String
+  orderType       String   // "buy" | "sell"
+  amount          String   // wei — original total
+  pricePerToken   String   // wei
+  closedStatus    String   // "filled" | "cancelled"
+  closedAt        DateTime
+  closedTxHash    String   @unique
+  filledByAddress String?  // set when closedStatus = "filled"
+  totalFilled     String   @default("0")   // wei — total filled over order lifetime
+  createdTxHash   String   // original createOrder() tx for audit trail
+  orderCreatedAt  DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([tokenOne, tokenTwo])
+  @@index([tokenOne, tokenTwo, closedStatus])
+  @@index([creatorAddress])
+  @@index([closedAt])
+  @@index([closedStatus])
+  @@index([orderId])
+}
